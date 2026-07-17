@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "asl-translator"
+version = "0.1.0"
+description = "Real-time ASL to Text translator using MediaPipe and TensorFlow"
+readme = "README.md"
+requires-python = ">=3.8"
+license = {text = "MIT"}
+authors = [
+    {name = "Your Name", email = "your.email@example.com"}
+]
+keywords = ["asl", "sign-language", "translation", "mediapipe", "tensorflow"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+]
+
+dependencies = [
+    "streamlit==1.28.1",
+    "opencv-python==4.8.1.78",
+    "mediapipe==0.10.3",
+    "tensorflow==2.14.0",
+    "numpy==1.24.3",
+    "pandas==2.1.0",
+    "pillow==10.0.0",
+    "scikit-learn==1.3.1",
+]
+
+[project.urls]
+Homepage = "https://github.com/yourusername/asl-translator"
+Documentation = "https://github.com/yourusername/asl-translator#readme"
+Repository = "https://github.com/yourusername/asl-translator.git"
+Issues = "https://github.com/yourusername/asl-translator/issues"
+
+[tool.setuptools]
+packages = ["src"]
