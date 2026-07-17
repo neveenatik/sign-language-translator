@@ -486,7 +486,7 @@ with col1:
 with col2:
     st.markdown("### 💾 Data Location")
     st.markdown("`models/` - Trained models")
-    st.markdown("`data/` - Training data")
+    st.markdown("`data/` - Training data *(local only, not in repo)*")
 
 with col3:
     st.markdown("### 🔧 Quick Links")
