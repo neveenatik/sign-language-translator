@@ -38,7 +38,6 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.gesture_recognizer import GestureRecognizer  # noqa: E402
 from src.pose_detector import PoseDetector  # noqa: E402
 from src.languages import get_language, resolve_folder_label  # noqa: E402
 
