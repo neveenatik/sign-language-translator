@@ -11,6 +11,7 @@ from src.pose_detector import PoseDetector
 from src.gesture_recognizer import GestureRecognizer
 from src.utils import SmoothingFilter, TextBuffer, display_fps, display_gesture, resize_frame
 import os
+import tempfile
 
 import av
 from streamlit_webrtc import WebRtcMode, VideoProcessorBase, webrtc_streamer
@@ -254,6 +255,131 @@ def run_live_translation():
     st.caption("Tip: the 'space' and 'delete' signs edit the running text.")
 
 
+def run_upload_video():
+    """Translate an uploaded ASL fingerspelling video into text."""
+    st.subheader("📹 Upload Video")
+    st.caption(
+        "Upload a short clip of ASL fingerspelling. The app extracts hand "
+        "landmarks frame-by-frame and builds the recognized text."
+    )
+
+    if not os.path.exists("models/asl_model.h5"):
+        st.warning(
+            "⚠️ **Pre-trained model not found** (`models/asl_model.h5`), "
+            "so video can't be translated yet. See the training guide below."
+        )
+        return
+
+    uploaded = st.file_uploader(
+        "Choose a video file", type=["mp4", "mov", "avi", "mkv", "webm"]
+    )
+    if uploaded is None:
+        return
+
+    st.video(uploaded)
+
+    if not st.button("🔤 Translate video"):
+        return
+
+    # Persist the upload to a temp file so OpenCV can read it.
+    suffix = os.path.splitext(uploaded.name)[1] or ".mp4"
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        tmp.write(uploaded.getbuffer())
+        video_path = tmp.name
+
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        st.error("Could not read the uploaded video. Try a different format (mp4).")
+        _safe_remove(video_path)
+        return
+
+    detector = PoseDetector(static_image_mode=False, max_num_hands=1)
+    recognizer = GestureRecognizer(model_path="models/asl_model.h5")
+    smoother = SmoothingFilter(window_size=smoothing_window)
+
+    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
+    fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
+    step = max(1, int(round(fps / 8)))  # analyze ~8 frames per second
+
+    STABLE_FRAMES = 3      # sampled frames a letter must persist to be committed
+    COOLDOWN_FRAMES = 4    # sampled frames to wait after committing
+    sentence = ""
+    last_label = None
+    stable = 0
+    cooldown = 0
+
+    progress = st.progress(0.0, text="Analyzing video…")
+    preview = st.empty()
+    idx = 0
+    processed = 0
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+        if idx % step != 0:
+            idx += 1
+            continue
+
+        annotated, hands = detector.detect(frame)
+        label = None
+        if hands:
+            norm = detector.normalize_landmarks(hands[0])
+            raw = recognizer.predict(norm, confidence_threshold)
+            smooth = smoother.smooth_prediction(raw)
+            if smooth:
+                label = smooth["label"]
+                annotated = display_gesture(
+                    annotated, label, raw["confidence"] if raw else 0.0
+                )
+
+        # Debounce: commit a letter only after it stays stable, then cool down.
+        if label is None:
+            last_label, stable = None, 0
+        else:
+            if label == last_label:
+                stable += 1
+            else:
+                last_label, stable = label, 1
+            if cooldown > 0:
+                cooldown -= 1
+            elif stable == STABLE_FRAMES:
+                if label == "space":
+                    sentence += " "
+                elif label == "delete":
+                    sentence = sentence[:-1]
+                else:
+                    sentence += label
+                cooldown = COOLDOWN_FRAMES
+
+        processed += 1
+        if processed % 5 == 0:
+            preview.image(
+                annotated, channels="BGR", caption=f"Reading: {sentence or '…'}"
+            )
+        if total:
+            progress.progress(min(idx / total, 1.0), text="Analyzing video…")
+        idx += 1
+
+    cap.release()
+    _safe_remove(video_path)
+    progress.progress(1.0, text="Done")
+
+    st.success("✅ Translation complete")
+    st.markdown("### Recognized text")
+    st.text_area(
+        "Output",
+        value=sentence.strip() or "(no letters recognized — try clearer, slower signing)",
+        height=100,
+    )
+
+
+def _safe_remove(path):
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
 def run_demo():
     """Run demo mode with sample image."""
     st.subheader("🎬 Demo Mode")
@@ -321,8 +447,7 @@ def run_training_guide():
 if mode == "Live Translation":
     run_live_translation()
 elif mode == "Upload Video":
-    st.subheader("📹 Upload Video")
-    st.info("Video upload functionality - coming soon!")
+    run_upload_video()
 elif mode == "Demo":
     run_demo()
 
