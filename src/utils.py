@@ -2,10 +2,20 @@
 Utility functions for the ASL translator.
 """
 
+import os
 import numpy as np
 import cv2
 from collections import deque
-from typing import Deque, List, Dict
+from typing import Deque, List, Dict, Optional, Tuple
+
+# Bundled font that covers Arabic (and Latin) glyphs, used by the PIL text
+# renderer so right-to-left scripts show up on the video overlay. OpenCV's
+# built-in Hershey fonts cannot render Arabic.
+_ARABIC_FONT_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "assets", "fonts", "NotoNaskhArabic.ttf",
+)
+_FONT_CACHE: Dict[int, "object"] = {}
 
 
 class SmoothingFilter:
@@ -165,6 +175,103 @@ def resize_frame(frame: np.ndarray, width: int = 640, height: int = 480) -> np.n
         Resized frame
     """
     return cv2.resize(frame, (width, height))
+
+
+def prepare_display_text(text: str, rtl: bool = False) -> str:
+    """
+    Prepare recognized text for display.
+
+    For right-to-left scripts (e.g. Arabic) this reshapes the letters into
+    their connected forms and applies the bidi algorithm so the string renders
+    correctly. If the optional `arabic_reshaper` / `python-bidi` packages are
+    not installed it falls back to returning the text unchanged.
+
+    Args:
+        text: Raw recognized text (sequence of predicted labels).
+        rtl: Whether the active language is right-to-left.
+
+    Returns:
+        Display-ready text.
+    """
+    if not rtl or not text:
+        return text
+
+    try:
+        import arabic_reshaper
+        from bidi.algorithm import get_display
+
+        return get_display(arabic_reshaper.reshape(text))
+    except Exception:
+        # Optional deps missing (or reshaping failed) — show the raw text.
+        return text
+
+
+def _load_font(size: int):
+    """Load (and cache) the bundled TrueType font at the given size."""
+    if size in _FONT_CACHE:
+        return _FONT_CACHE[size]
+    try:
+        from PIL import ImageFont
+
+        if os.path.exists(_ARABIC_FONT_PATH):
+            font = ImageFont.truetype(_ARABIC_FONT_PATH, size)
+        else:
+            font = ImageFont.load_default()
+    except Exception:
+        font = None
+    _FONT_CACHE[size] = font
+    return font
+
+
+def draw_text(
+    frame: np.ndarray,
+    text: str,
+    position: Tuple[int, int],
+    rtl: bool = False,
+    font_size: int = 32,
+    color: Tuple[int, int, int] = (0, 255, 0),
+) -> np.ndarray:
+    """
+    Draw text onto a BGR frame using PIL so non-Latin scripts (Arabic) render.
+
+    Falls back to `cv2.putText` for Latin text or if PIL/the bundled font is
+    unavailable. `position` is the bottom-left baseline (to match cv2.putText).
+
+    Args:
+        frame: Input BGR frame (modified via a returned copy).
+        text: Text to draw (already display-ordered for RTL if applicable).
+        position: (x, y) bottom-left anchor, matching cv2.putText semantics.
+        rtl: Whether the text is a right-to-left script.
+        font_size: Font pixel size.
+        color: BGR color tuple.
+
+    Returns:
+        Frame with the text drawn.
+    """
+    # Latin text renders fine (and faster) with OpenCV's built-in font.
+    if not rtl:
+        cv2.putText(
+            frame, text, position, cv2.FONT_HERSHEY_SIMPLEX, 1.0, color, 2
+        )
+        return frame
+
+    font = _load_font(font_size)
+    if font is None:
+        # No PIL/font available — best-effort fallback.
+        cv2.putText(
+            frame, text, position, cv2.FONT_HERSHEY_SIMPLEX, 1.0, color, 2
+        )
+        return frame
+
+    from PIL import Image, ImageDraw
+
+    img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+    draw = ImageDraw.Draw(img)
+    # cv2 anchors at the baseline/bottom; PIL anchors at the top — shift up.
+    x, y = position
+    top_y = max(0, y - font_size)
+    draw.text((x, top_y), text, font=font, fill=(color[2], color[1], color[0]))
+    return cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
 
 
 def get_frame_info(frame: np.ndarray) -> Dict:
