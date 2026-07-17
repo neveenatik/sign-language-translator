@@ -33,6 +33,8 @@ wheels/
 models/*.h5
 models/*.pb
 models/*.tflite
+# ...but keep the deployed live-demo model so Hugging Face Spaces can load it
+!models/asl_model.h5
 data/raw/*
 data/processed/*
 !data/raw/.gitkeep

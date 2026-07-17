@@ -1,6 +1,24 @@
+---
+title: ASL to Text Translator
+emoji: 🤟
+colorFrom: indigo
+colorTo: purple
+sdk: streamlit
+sdk_version: 1.28.1
+app_file: app.py
+pinned: false
+license: mit
+---
+
 # 🤟 Real-time ASL to Text Translator
 
 A Python application that translates American Sign Language (ASL) to text in real-time using your webcam. The system uses MediaPipe for hand pose detection and TensorFlow for gesture recognition.
+
+> **Live demo:** the app runs on Hugging Face Spaces and uses **your browser's
+> webcam** via WebRTC (`streamlit-webrtc`). Allow camera access, sign ASL
+> letters, and recognized letters build up into text on the video. See
+> [Deployment](#-deployment-hugging-face-spaces) below.
+
 
 ## Features
 
@@ -150,13 +168,28 @@ Predictions are smoothed using a sliding window to:
 
 ## Training Your Own Model
 
-### Option 1: Quick Start (Pre-trained)
+The recognizer classifies a **63-dim hand-landmark vector** (21 MediaPipe
+points × x/y/z), so you can train it from any source of ASL hand images — the
+same normalization is used at train and inference time.
 
-The application can work with gesture data from:
-- [CRNN-based ASL Recognition](https://github.com/topics/asl-recognition)
-- [MediaPipe Gesture Recognizer](https://developers.google.com/mediapipe/solutions/vision/gesture_recognizer)
+### Option A: Train from a public image dataset (recommended)
 
-### Option 2: Custom Training
+1. **Download** an ASL alphabet image dataset with one subfolder per letter
+   (e.g. Kaggle [*ASL Alphabet*](https://www.kaggle.com/datasets/grassknoted/asl-alphabet)).
+   Its folders are `A…Z`, `del`, `space`, `nothing` — the builder maps
+   `del → delete`, `space → space`, and skips `nothing`.
+2. **Extract landmarks** into a training set (`--per-class` caps images per
+   letter to keep it fast):
+```bash
+python scripts/build_dataset_from_images.py \
+    --input path/to/asl_alphabet_train --per-class 400
+```
+3. **Train** and save `models/asl_model.h5`:
+```bash
+python scripts/train_from_landmarks.py --epochs 60
+```
+
+### Option B: Collect your own samples
 
 1. **Collect Data**:
 ```bash
@@ -177,6 +210,38 @@ python scripts/train_model.py --epochs 50 --batch-size 32
 ```bash
 jupyter notebook notebooks/ASL_Model_Optimization_90percent.ipynb
 ```
+
+## 🚀 Deployment (Hugging Face Spaces)
+
+The app is packaged to run as a **Streamlit Space** using the visitor's own
+webcam via WebRTC — no server camera required.
+
+Files that make this work:
+- `app.py` — `streamlit-webrtc` streams browser video to the server for
+  per-frame hand detection + gesture recognition.
+- `requirements.txt` — pinned Python deps (incl. `streamlit-webrtc`, `av`).
+- `packages.txt` — apt packages for OpenCV/MediaPipe/av (`libgl1`,
+  `libglib2.0-0`, `ffmpeg`).
+- `README.md` frontmatter — the Space config (`sdk: streamlit`, `app_file`).
+
+Steps:
+```bash
+# 1. Train a model first so it ships with the Space:
+python scripts/build_dataset_from_images.py --input path/to/asl_alphabet_train --per-class 400
+python scripts/train_from_landmarks.py --epochs 60   # writes models/asl_model.h5
+
+# 2. Create a Space and push (via the Hugging Face web UI or CLI):
+pip install "huggingface_hub[cli]"
+huggingface-cli login
+huggingface-cli repo create sign-language-translator --type space --space_sdk streamlit
+git remote add space https://huggingface.co/spaces/<your-username>/sign-language-translator
+git push space main
+```
+
+> **Note:** `models/asl_model.h5` is normally git-ignored; commit the trained
+> model (it's a small MLP) so the Space can load it. WebRTC works best with a
+> TURN server — Spaces provides community STUN/TURN, but on restrictive
+> networks live video may need a fallback TURN endpoint.
 
 ## Configuration
 

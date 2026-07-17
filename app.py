@@ -12,6 +12,9 @@ from src.gesture_recognizer import GestureRecognizer
 from src.utils import SmoothingFilter, TextBuffer, display_fps, display_gesture, resize_frame
 import os
 
+import av
+from streamlit_webrtc import WebRtcMode, VideoProcessorBase, webrtc_streamer
+
 
 # Page configuration
 st.set_page_config(
@@ -135,89 +138,120 @@ def process_frame(frame, detector, recognizer, smoothing_filter, confidence_thre
     return annotated_frame, prediction, text_output
 
 
+RTC_CONFIGURATION = {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
+
+
+class ASLVideoProcessor(VideoProcessorBase):
+    """Runs hand detection + gesture recognition on each browser webcam frame."""
+
+    STABLE_FRAMES = 6      # frames a letter must persist before it's committed
+    COOLDOWN_FRAMES = 10   # frames to wait after committing a letter
+
+    def __init__(self):
+        self.detector = PoseDetector(static_image_mode=False, max_num_hands=1)
+        model_path = "models/asl_model.h5"
+        self.recognizer = GestureRecognizer(
+            model_path=model_path if os.path.exists(model_path) else None
+        )
+        self.smoother = SmoothingFilter(window_size=5)
+        self.confidence_threshold = 0.6
+        self.show_landmarks = True
+        self.sentence = ""
+        self._last_label = None
+        self._stable = 0
+        self._cooldown = 0
+
+    def _commit(self, label):
+        if label == "space":
+            self.sentence += " "
+        elif label == "delete":
+            self.sentence = self.sentence[:-1]
+        else:
+            self.sentence += label
+        self.sentence = self.sentence[-40:]
+
+    def _update_sentence(self, label):
+        if label is None:
+            self._last_label = None
+            self._stable = 0
+            return
+        if label == self._last_label:
+            self._stable += 1
+        else:
+            self._last_label = label
+            self._stable = 1
+        if self._cooldown > 0:
+            self._cooldown -= 1
+            return
+        if self._stable == self.STABLE_FRAMES:
+            self._commit(label)
+            self._cooldown = self.COOLDOWN_FRAMES
+
+    def recv(self, frame: av.VideoFrame) -> av.VideoFrame:
+        img = frame.to_ndarray(format="bgr24")
+        img = cv2.flip(img, 1)
+
+        if self.show_landmarks:
+            annotated, hands = self.detector.detect(img)
+        else:
+            _, hands = self.detector.detect(img)
+            annotated = img
+
+        label = None
+        if not self.recognizer.is_trained:
+            cv2.putText(annotated, "Model not loaded", (20, 40),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 255), 2)
+        elif hands:
+            norm = self.detector.normalize_landmarks(hands[0])
+            raw = self.recognizer.predict(norm, self.confidence_threshold)
+            smooth = self.smoother.smooth_prediction(raw)
+            if smooth:
+                label = smooth["label"]
+                annotated = display_gesture(
+                    annotated, label, raw["confidence"] if raw else 0.0
+                )
+        self._update_sentence(label)
+
+        h, w = annotated.shape[:2]
+        cv2.rectangle(annotated, (0, h - 50), (w, h), (0, 0, 0), -1)
+        cv2.putText(annotated, self.sentence or "...", (15, h - 15),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2)
+
+        return av.VideoFrame.from_ndarray(annotated, format="bgr24")
+
+
 def run_live_translation():
-    """Run live webcam translation."""
+    """Run live browser-webcam translation via WebRTC."""
     st.subheader("📹 Live Translation")
-    
-    col1, col2 = st.columns([2, 1])
-    
-    with col1:
-        frame_placeholder = st.empty()
-    
-    with col2:
-        st.markdown("### Translated Text:")
-        text_placeholder = st.empty()
-        stats_placeholder = st.empty()
-    
-    # Control buttons
-    col1_btn, col2_btn, col3_btn = st.columns(3)
-    with col1_btn:
-        start_btn = st.button("▶️ Start", key="start")
-    with col2_btn:
-        stop_btn = st.button("⏹️ Stop", key="stop")
-    with col3_btn:
-        clear_btn = st.button("🗑️ Clear", key="clear")
-    
-    detector, recognizer = initialize_detector_and_recognizer()
-    smoothing_filter = SmoothingFilter(window_size=smoothing_window)
-    
-    if not recognizer.is_trained:
+    st.caption(
+        "Allow camera access, then sign ASL letters. Hold each sign steady for a "
+        "moment — recognized letters build up at the bottom of the video."
+    )
+
+    if not os.path.exists("models/asl_model.h5"):
         st.warning(
-            "⚠️ **Pre-trained model not found.** "
-            "The model will need to be trained with ASL gesture data first. "
-            "See the Training section for guidance."
+            "⚠️ **Pre-trained model not found** (`models/asl_model.h5`). "
+            "The camera will still stream and track your hand, but letters won't "
+            "be recognized until a model is trained. See the training guide below."
         )
-        return
-    
-    cap = cv2.VideoCapture(0)
-    if not cap.isOpened():
-        st.error("❌ Could not access webcam. Please check permissions.")
-        return
-    
-    st.session_state.running = start_btn
-    
-    fps = 0
-    frame_time_queue = []
-    
-    while st.session_state.running and not stop_btn:
-        ret, frame = cap.read()
-        if not ret:
-            st.error("Failed to capture frame")
-            break
-        
-        # Calculate FPS
-        frame_start = time.time()
-        
-        frame = cv2.flip(frame, 1)
-        processed_frame, prediction, text_output = process_frame(
-            frame,
-            detector,
-            recognizer,
-            smoothing_filter,
-            confidence_threshold,
-            show_landmarks
-        )
-        
-        # Display FPS
-        frame_time = time.time() - frame_start
-        frame_time_queue.append(frame_time)
-        if len(frame_time_queue) > 10:
-            frame_time_queue.pop(0)
-            fps = 10 / sum(frame_time_queue)
-        
-        processed_frame = display_fps(processed_frame, fps)
-        
-        # Update displays
-        frame_placeholder.image(processed_frame, channels="BGR", use_container_width=True)
-        text_placeholder.code(st.session_state.text_buffer.get_text() or "Waiting for gestures...")
-        stats_placeholder.metric("FPS", f"{fps:.1f}")
-        
-        if clear_btn:
-            st.session_state.text_buffer.clear()
-            smoothing_filter.reset()
-    
-    cap.release()
-    detector.close()
+
+    ctx = webrtc_streamer(
+        key="asl-live",
+        mode=WebRtcMode.SENDRECV,
+        rtc_configuration=RTC_CONFIGURATION,
+        video_processor_factory=ASLVideoProcessor,
+        media_stream_constraints={"video": True, "audio": False},
+        async_processing=True,
+    )
+
+    if ctx.video_processor:
+        ctx.video_processor.confidence_threshold = confidence_threshold
+        ctx.video_processor.show_landmarks = show_landmarks
+
+    if st.button("🗑️ Clear text"):
+        if ctx.video_processor:
+            ctx.video_processor.sentence = ""
+    st.caption("Tip: the 'space' and 'delete' signs edit the running text.")
 
 
 def run_demo():
@@ -253,29 +287,33 @@ def run_training_guide():
     with st.expander("📚 How to Train the Model", expanded=False):
         st.markdown("""
         ### Training Your ASL Recognition Model
-        
-        #### Step 1: Collect Training Data
-        1. Create labeled folders in `data/raw/` for each ASL letter (A-Z, space, delete)
-        2. Use the `collect_data.py` script to gather hand landmark data
-        3. Aim for 50-100 samples per gesture
-        
-        #### Step 2: Prepare the Data
+
+        #### Option A — Train from a public image dataset (recommended)
+        1. Download an ASL alphabet image dataset (e.g. Kaggle *ASL Alphabet*)
+           with one subfolder per letter.
+        2. Extract landmarks into a training set:
         ```bash
-        python scripts/prepare_data.py
+        python scripts/build_dataset_from_images.py \\
+            --input path/to/asl_alphabet_train --per-class 400
         ```
-        
-        #### Step 3: Train the Model
+        3. Train the model (features match the live app exactly):
+        ```bash
+        python scripts/train_from_landmarks.py --epochs 60
+        ```
+
+        #### Option B — Collect your own samples
+        1. Capture landmarks per letter with your webcam:
+        ```bash
+        python scripts/collect_data.py --gesture A --samples 100
+        ```
+        2. Train on the collected data:
         ```bash
         python scripts/train_model.py
         ```
-        
-        #### Step 4: Evaluate the Model
-        - Check the training metrics in `notebooks/ASL_Model_Optimization_90percent.ipynb`
-        - Fine-tune hyperparameters if needed
-        
-        #### Step 5: Save and Deploy
-        - The model will be saved to `models/asl_model.h5`
-        - It will automatically be used in the Live Translation mode
+
+        #### Result
+        - The model is saved to `models/asl_model.h5` and is picked up
+          automatically by Live Translation.
         """)
 
 
