@@ -62,7 +62,8 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--input", required=True, help="Folder containing per-letter image subfolders")
     ap.add_argument("--language", default="asl", help="Sign language code (asl, arsl)")
-    ap.add_argument("--output", default="data/processed/landmarks.npz")
+    ap.add_argument("--output", default=None,
+                    help="Output .npz (default: data/processed/<language>_landmarks.npz)")
     ap.add_argument("--per-class", type=int, default=0, help="Max images per class (0 = all)")
     args = ap.parse_args()
 
@@ -72,6 +73,7 @@ def main():
         sys.exit(1)
 
     language = get_language(args.language)
+    output_path = args.output or f"data/processed/{language.code}_landmarks.npz"
     labels = language.labels
     label_to_idx = {lbl: i for i, lbl in enumerate(labels)}
 
@@ -115,7 +117,7 @@ def main():
 
     X = np.asarray(X, dtype=np.float32)
     y = np.asarray(y, dtype=np.int64)
-    out = Path(args.output)
+    out = Path(output_path)
     out.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(out, X=X, y=y, labels=np.array(labels), language=language.code)
 

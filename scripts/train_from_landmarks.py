@@ -38,7 +38,8 @@ def main():
     ap.add_argument("--language", default="asl", help="Sign language code (asl, arsl)")
     ap.add_argument("--epochs", type=int, default=60)
     ap.add_argument("--batch-size", type=int, default=64)
-    ap.add_argument("--output", default="models/asl_model.h5")
+    ap.add_argument("--output", default=None,
+                    help="Output .h5 (default: the language's model_path, e.g. models/arsl_model.h5)")
     args = ap.parse_args()
 
     data_path = Path(args.input)
@@ -48,6 +49,7 @@ def main():
         sys.exit(1)
 
     language = get_language(args.language)
+    output_path = args.output or language.model_path
 
     data = np.load(data_path, allow_pickle=True)
     X, y = data["X"], data["y"]
@@ -92,11 +94,11 @@ def main():
         verbose=2,
     )
 
-    Path(args.output).parent.mkdir(parents=True, exist_ok=True)
-    recognizer.save_model(args.output)
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    recognizer.save_model(output_path)
 
     _, val_acc = recognizer.model.evaluate(X_val, y_val_oh, verbose=0)
-    print(f"\n✅ Saved {args.output}")
+    print(f"\n✅ Saved {output_path}")
     print(f"   Validation accuracy: {val_acc:.3f}")
 
 
