@@ -484,9 +484,10 @@ with col1:
     st.markdown("[TensorFlow](https://tensorflow.org)")
 
 with col2:
-    st.markdown("### 💾 Data Location")
+    st.markdown("### 💾 Data Sources")
     st.markdown("`models/` - Trained models")
-    st.markdown("`data/` - Training data *(local only, not in repo)*")
+    st.markdown("[ASL Alphabet Dataset](https://www.kaggle.com/datasets/grassknoted/asl-alphabet) — grassknoted (Kaggle)")
+    st.markdown("[Arabic Sign Language Dataset](https://www.kaggle.com/datasets/ammarsayedtaha/arabic-sign-language-dataset-2022) — ammarsayedtaha (Kaggle)")
 
 with col3:
     st.markdown("### 🔧 Quick Links")
