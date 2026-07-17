@@ -299,14 +299,16 @@ def run_upload_video():
 
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
     fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
-    step = max(1, int(round(fps / 8)))  # analyze ~8 frames per second
+    step = max(1, int(round(fps / 12)))  # analyze ~12 frames/sec for motion detail
 
-    STABLE_FRAMES = 3      # sampled frames a letter must persist to be committed
-    COOLDOWN_FRAMES = 4    # sampled frames to wait after committing
+    # Motion-gated commit: a letter is only committed while the hand is *still*
+    # (settled on a sign). Once committed, it locks until the hand moves again
+    # (to the next letter), so transitions between letters are never captured.
+    MOVE_THRESHOLD = 0.06   # mean landmark displacement that counts as "moving"
+    COMMIT_CONFIDENCE = max(confidence_threshold, 0.80)
     sentence = ""
-    last_label = None
-    stable = 0
-    cooldown = 0
+    prev_norm = None
+    locked = False
 
     progress = st.progress(0.0, text="Analyzing video…")
     preview = st.empty()
@@ -322,34 +324,42 @@ def run_upload_video():
 
         annotated, hands = detector.detect(frame)
         label = None
+        confidence = 0.0
+        norm = None
         if hands:
             norm = detector.normalize_landmarks(hands[0])
             raw = recognizer.predict(norm, confidence_threshold)
             smooth = smoother.smooth_prediction(raw)
             if smooth:
                 label = smooth["label"]
-                annotated = display_gesture(
-                    annotated, label, raw["confidence"] if raw else 0.0
-                )
+                confidence = raw["confidence"] if raw else 0.0
+                annotated = display_gesture(annotated, label, confidence)
 
-        # Debounce: commit a letter only after it stays stable, then cool down.
-        if label is None:
-            last_label, stable = None, 0
+        if norm is None:
+            # No hand in frame — treat as a release so the next sign can commit.
+            locked = False
+            prev_norm = None
         else:
-            if label == last_label:
-                stable += 1
+            # Mean per-landmark movement since the previous analyzed frame.
+            if prev_norm is not None:
+                pts = norm.reshape(-1, 3)[:, :2]
+                prev_pts = prev_norm.reshape(-1, 3)[:, :2]
+                motion = float(np.linalg.norm(pts - prev_pts, axis=1).mean())
             else:
-                last_label, stable = label, 1
-            if cooldown > 0:
-                cooldown -= 1
-            elif stable == STABLE_FRAMES:
+                motion = 1.0  # unknown → assume moving
+            prev_norm = norm
+
+            if motion > MOVE_THRESHOLD:
+                locked = False  # hand is transitioning to the next letter
+            elif not locked and label is not None and confidence >= COMMIT_CONFIDENCE:
+                # Hand is still, confident, and not already committed → commit once.
                 if label == "space":
                     sentence += " "
                 elif label == "delete":
                     sentence = sentence[:-1]
                 else:
                     sentence += label
-                cooldown = COOLDOWN_FRAMES
+                locked = True
 
         processed += 1
         if processed % 5 == 0:
