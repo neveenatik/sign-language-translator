@@ -9,7 +9,8 @@ import numpy as np
 import time
 from src.pose_detector import PoseDetector
 from src.gesture_recognizer import GestureRecognizer
-from src.utils import SmoothingFilter, TextBuffer, display_fps, display_gesture, resize_frame
+from src.utils import SmoothingFilter, TextBuffer, display_fps, display_gesture, resize_frame, prepare_display_text, draw_text
+from src.languages import available_languages, get_language, DEFAULT_LANGUAGE
 import os
 import tempfile
 
@@ -38,6 +39,17 @@ with st.sidebar:
         ["Live Translation", "Upload Video", "Demo"]
     )
     
+    _languages = available_languages()
+    _lang_codes = [lang.code for lang in _languages]
+    language_code = st.selectbox(
+        "Sign Language:",
+        _lang_codes,
+        index=_lang_codes.index(DEFAULT_LANGUAGE),
+        format_func=lambda code: get_language(code).name,
+        help="Choose which sign language alphabet to recognize.",
+    )
+    language = get_language(language_code)
+    
     confidence_threshold = st.slider(
         "Confidence Threshold:",
         min_value=0.0,
@@ -64,7 +76,9 @@ with st.sidebar:
     st.markdown("---")
     st.info(
         "💡 **Tip**: Position your hands clearly in front of the camera. "
-        "The model works best with good lighting and clear hand visibility."
+        "The model works best with good lighting and clear hand visibility. "
+        "Perform gestures slowly and hold each sign steady so the model can "
+        "predict accurately."
     )
 
 
@@ -148,11 +162,13 @@ class ASLVideoProcessor(VideoProcessorBase):
     STABLE_FRAMES = 6      # frames a letter must persist before it's committed
     COOLDOWN_FRAMES = 10   # frames to wait after committing a letter
 
-    def __init__(self):
+    def __init__(self, language=None):
+        self.language = language if language is not None else get_language(DEFAULT_LANGUAGE)
         self.detector = PoseDetector(static_image_mode=False, max_num_hands=1)
-        model_path = "models/asl_model.h5"
+        model_path = self.language.model_path
         self.recognizer = GestureRecognizer(
-            model_path=model_path if os.path.exists(model_path) else None
+            model_path=model_path if os.path.exists(model_path) else None,
+            labels=self.language.labels,
         )
         self.smoother = SmoothingFilter(window_size=5)
         self.confidence_threshold = 0.6
@@ -215,8 +231,11 @@ class ASLVideoProcessor(VideoProcessorBase):
 
         h, w = annotated.shape[:2]
         cv2.rectangle(annotated, (0, h - 50), (w, h), (0, 0, 0), -1)
-        cv2.putText(annotated, self.sentence or "...", (15, h - 15),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2)
+        display_sentence = prepare_display_text(self.sentence, self.language.rtl) or "..."
+        annotated = draw_text(
+            annotated, display_sentence, (15, h - 15),
+            rtl=self.language.rtl, color=(0, 255, 0),
+        )
 
         return av.VideoFrame.from_ndarray(annotated, format="bgr24")
 
@@ -225,22 +244,24 @@ def run_live_translation():
     """Run live browser-webcam translation via WebRTC."""
     st.subheader("📹 Live Translation")
     st.caption(
-        "Allow camera access, then sign ASL letters. Hold each sign steady for a "
-        "moment — recognized letters build up at the bottom of the video."
+        f"Allow camera access, then sign {language.name} letters. Hold each sign "
+        "steady for a moment — recognized letters build up at the bottom of the "
+        "video."
     )
 
-    if not os.path.exists("models/asl_model.h5"):
+    if not os.path.exists(language.model_path):
         st.warning(
-            "⚠️ **Pre-trained model not found** (`models/asl_model.h5`). "
+            f"⚠️ **Pre-trained model not found** (`{language.model_path}`). "
             "The camera will still stream and track your hand, but letters won't "
-            "be recognized until a model is trained. See the training guide below."
+            "be recognized until a model is trained for this language. See the "
+            "training guide below."
         )
 
     ctx = webrtc_streamer(
-        key="asl-live",
+        key=f"live-{language.code}",
         mode=WebRtcMode.SENDRECV,
         rtc_configuration=RTC_CONFIGURATION,
-        video_processor_factory=ASLVideoProcessor,
+        video_processor_factory=lambda: ASLVideoProcessor(language=language),
         media_stream_constraints={"video": True, "audio": False},
         async_processing=True,
     )
@@ -259,14 +280,15 @@ def run_upload_video():
     """Translate an uploaded ASL fingerspelling video into text."""
     st.subheader("📹 Upload Video")
     st.caption(
-        "Upload a short clip of ASL fingerspelling. The app extracts hand "
-        "landmarks frame-by-frame and builds the recognized text."
+        "Upload a short clip of sign-language fingerspelling. The app extracts "
+        "hand landmarks frame-by-frame and builds the recognized text."
     )
 
-    if not os.path.exists("models/asl_model.h5"):
+    if not os.path.exists(language.model_path):
         st.warning(
-            "⚠️ **Pre-trained model not found** (`models/asl_model.h5`), "
-            "so video can't be translated yet. See the training guide below."
+            f"⚠️ **Pre-trained model not found** (`{language.model_path}`), "
+            "so video can't be translated yet for this language. See the "
+            "training guide below."
         )
         return
 
@@ -294,7 +316,7 @@ def run_upload_video():
         return
 
     detector = PoseDetector(static_image_mode=False, max_num_hands=1)
-    recognizer = GestureRecognizer(model_path="models/asl_model.h5")
+    recognizer = GestureRecognizer(model_path=language.model_path, labels=language.labels)
     smoother = SmoothingFilter(window_size=smoothing_window)
 
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
@@ -353,8 +375,9 @@ def run_upload_video():
 
         processed += 1
         if processed % 5 == 0:
+            _preview_text = prepare_display_text(sentence, language.rtl) or "…"
             preview.image(
-                annotated, channels="BGR", caption=f"Reading: {sentence or '…'}"
+                annotated, channels="BGR", caption=f"Reading: {_preview_text}"
             )
         if total:
             progress.progress(min(idx / total, 1.0), text="Analyzing video…")
@@ -368,7 +391,8 @@ def run_upload_video():
     st.markdown("### Recognized text")
     st.text_area(
         "Output",
-        value=sentence.strip() or "(no letters recognized — try clearer, slower signing)",
+        value=prepare_display_text(sentence.strip(), language.rtl)
+        or "(no letters recognized — try clearer, slower signing)",
         height=100,
     )
 

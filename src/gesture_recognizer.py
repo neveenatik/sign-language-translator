@@ -22,13 +22,16 @@ class GestureRecognizer:
         'U', 'V', 'W', 'X', 'Y', 'Z', 'space', 'delete'
     ]
 
-    def __init__(self, model_path: Optional[str] = None):
+    def __init__(self, model_path: Optional[str] = None, labels: Optional[List[str]] = None):
         """
         Initialize the gesture recognizer.
         
         Args:
             model_path: Path to pre-trained model. If None, creates a new model.
+            labels: Ordered class labels to recognize. Defaults to the ASL
+                alphabet for backward compatibility.
         """
+        self.labels = labels if labels is not None else list(self.ASL_LABELS)
         self.model = None
         self.is_trained = False
         
@@ -58,7 +61,7 @@ class GestureRecognizer:
             tf.keras.layers.Dropout(0.2),
             
             # Output layer
-            tf.keras.layers.Dense(len(self.ASL_LABELS), activation='softmax')
+            tf.keras.layers.Dense(len(self.labels), activation='softmax')
         ])
         
         model.compile(
@@ -93,11 +96,11 @@ class GestureRecognizer:
         
         if confidence >= confidence_threshold:
             return {
-                'label': self.ASL_LABELS[predicted_idx],
+                'label': self.labels[predicted_idx],
                 'confidence': float(confidence),
                 'all_predictions': {
-                    self.ASL_LABELS[i]: float(predictions[i]) 
-                    for i in range(len(self.ASL_LABELS))
+                    self.labels[i]: float(predictions[i]) 
+                    for i in range(len(self.labels))
                 }
             }
         
@@ -168,4 +171,4 @@ class GestureRecognizer:
 
     def get_labels(self) -> List[str]:
         """Get list of recognizable labels."""
-        return self.ASL_LABELS
+        return self.labels

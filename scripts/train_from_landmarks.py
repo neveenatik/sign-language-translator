@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Train the ASL gesture model from a prebuilt landmark ``.npz`` and save it.
+"""Train a sign-gesture model from a prebuilt landmark ``.npz`` and save it.
 
 Use this after ``scripts/build_dataset_from_images.py``. Unlike
 ``scripts/train_model.py`` this deliberately does **not** apply a
@@ -8,10 +8,17 @@ inference time (the raw ``PoseDetector.normalize_landmarks`` output). Keeping
 train-time and inference-time preprocessing identical is what makes the live
 predictions trustworthy.
 
+Works for any registered sign language (see ``src/languages.py``); the label
+set / class count come from the selected language.
+
 Usage:
     python scripts/train_from_landmarks.py \
         --input data/processed/landmarks.npz \
         --epochs 60 --output models/asl_model.h5
+
+    python scripts/train_from_landmarks.py --language arsl \
+        --input data/processed/arsl_landmarks.npz \
+        --output models/arsl_model.h5
 """
 import argparse
 import sys
@@ -22,11 +29,13 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.gesture_recognizer import GestureRecognizer  # noqa: E402
+from src.languages import get_language  # noqa: E402
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--input", default="data/processed/landmarks.npz")
+    ap.add_argument("--language", default="asl", help="Sign language code (asl, arsl)")
     ap.add_argument("--epochs", type=int, default=60)
     ap.add_argument("--batch-size", type=int, default=64)
     ap.add_argument("--output", default="models/asl_model.h5")
@@ -38,14 +47,23 @@ def main():
         print("   Build it first with scripts/build_dataset_from_images.py")
         sys.exit(1)
 
+    language = get_language(args.language)
+
     data = np.load(data_path, allow_pickle=True)
     X, y = data["X"], data["y"]
     print(f"📊 Loaded {len(X)} samples with {X.shape[1]} features")
 
+    # Guard against training a language's model on another language's dataset.
+    ds_lang = str(data["language"]) if "language" in data else None
+    if ds_lang and ds_lang != language.code:
+        print(f"❌ Dataset was built for '{ds_lang}' but --language is "
+              f"'{language.code}'. Rebuild the dataset or fix --language.")
+        sys.exit(1)
+
     import tensorflow as tf
     from sklearn.model_selection import train_test_split
 
-    recognizer = GestureRecognizer()
+    recognizer = GestureRecognizer(labels=language.labels)
     n_classes = len(recognizer.get_labels())
 
     X_train, X_val, y_train, y_val = train_test_split(
@@ -54,7 +72,7 @@ def main():
     y_train_oh = tf.keras.utils.to_categorical(y_train, n_classes)
     y_val_oh = tf.keras.utils.to_categorical(y_val, n_classes)
 
-    print(f"🏋️  Training: {len(X_train)} train / {len(X_val)} val, "
+    print(f"🏋️  Training {language.name}: {len(X_train)} train / {len(X_val)} val, "
           f"{args.epochs} epochs (early stopping on val_accuracy)\n")
 
     callbacks = [

@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
-"""Build a landmark dataset (X, y) from a folder of ASL alphabet images.
+"""Build a landmark dataset (X, y) from a folder of sign-alphabet images.
 
 Runs MediaPipe Hands over each image, extracts the 63-dim normalized landmark
 vector used by the live app (``PoseDetector.normalize_landmarks``), and saves
 them to a compressed ``.npz``.
+
+Works for any registered sign language (see ``src/languages.py``). For ArSL,
+folders may be named with the Arabic letter directly or a supported
+transliteration (e.g. ``aleff`` -> ``ا``).
 
 Expected input layout (e.g. the Kaggle "ASL Alphabet" dataset by grassknoted):
 
@@ -19,6 +23,10 @@ Usage:
         --input path/to/asl_alphabet_train \
         --output data/processed/landmarks.npz \
         --per-class 400
+
+    python scripts/build_dataset_from_images.py --language arsl \
+        --input path/to/arsl_dataset \
+        --output data/processed/arsl_landmarks.npz
 """
 import argparse
 import sys
@@ -32,32 +40,20 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.gesture_recognizer import GestureRecognizer  # noqa: E402
 from src.pose_detector import PoseDetector  # noqa: E402
+from src.languages import get_language, resolve_folder_label  # noqa: E402
 
 IMG_EXT = {".jpg", ".jpeg", ".png", ".bmp"}
-# Folder-name aliases -> canonical label (None means "skip this folder").
-FOLDER_ALIASES = {"del": "delete", "space": "space", "nothing": None}
 
 
-def resolve_label(folder_name: str, valid: set) -> str | None:
-    """Map a dataset folder name to a canonical ASL label, or None to skip."""
-    low = folder_name.strip().lower()
-    if low in FOLDER_ALIASES:
-        return FOLDER_ALIASES[low]
-    up = folder_name.strip().upper()
-    if up in valid:
-        return up
-    return None
-
-
-def find_class_dirs(root: Path, valid: set):
+def find_class_dirs(root: Path, language):
     """Return [(dir, label)] for class folders, descending one level if needed."""
     dirs = [d for d in sorted(root.iterdir()) if d.is_dir()]
-    resolved = [(d, resolve_label(d.name, valid)) for d in dirs]
+    resolved = [(d, resolve_folder_label(language, d.name)) for d in dirs]
     if any(lbl for _, lbl in resolved):
         return resolved
     # Dataset may be wrapped in an extra folder (e.g. asl_alphabet_train/asl_alphabet_train/).
     for d in dirs:
-        sub = find_class_dirs(d, valid)
+        sub = find_class_dirs(d, language)
         if any(lbl for _, lbl in sub):
             return sub
     return resolved
@@ -66,6 +62,7 @@ def find_class_dirs(root: Path, valid: set):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--input", required=True, help="Folder containing per-letter image subfolders")
+    ap.add_argument("--language", default="asl", help="Sign language code (asl, arsl)")
     ap.add_argument("--output", default="data/processed/landmarks.npz")
     ap.add_argument("--per-class", type=int, default=0, help="Max images per class (0 = all)")
     args = ap.parse_args()
@@ -75,16 +72,17 @@ def main():
         print(f"❌ Input path not found: {root}")
         sys.exit(1)
 
-    labels = GestureRecognizer().get_labels()
-    valid = set(labels)
+    language = get_language(args.language)
+    labels = language.labels
     label_to_idx = {lbl: i for i, lbl in enumerate(labels)}
 
-    class_dirs = [(d, lbl) for d, lbl in find_class_dirs(root, valid) if lbl]
+    class_dirs = [(d, lbl) for d, lbl in find_class_dirs(root, language) if lbl]
     if not class_dirs:
-        print(f"❌ No class folders matching ASL labels were found under {root}")
+        print(f"❌ No class folders matching {language.name} labels were found under {root}")
         sys.exit(1)
 
-    print(f"🖐️  Extracting hand landmarks from {len(class_dirs)} classes...\n")
+    print(f"🖐️  Extracting hand landmarks for {language.name} "
+          f"from {len(class_dirs)} classes...\n")
     detector = PoseDetector(static_image_mode=True, max_num_hands=1)
 
     X, y = [], []
@@ -120,7 +118,7 @@ def main():
     y = np.asarray(y, dtype=np.int64)
     out = Path(args.output)
     out.parent.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(out, X=X, y=y, labels=np.array(labels))
+    np.savez_compressed(out, X=X, y=y, labels=np.array(labels), language=language.code)
 
     dt = time.time() - t0
     print(f"\n✅ Saved {len(X)} samples ({total_hits}/{total_imgs} images had a "
